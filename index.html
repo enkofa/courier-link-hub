@@ -425,9 +425,47 @@ const PAY_CBA={"37":{"s":"https://buy.stripe.com/28o02xfew5SB9B6g3F","f":"https:
 const PAY_W2W={"1497":"https://wheels2wealth.com/w2w-diamond-mastermind-partial-payment","6000":"https://wheels2wealth.com/w2w-diamond-mastermind-pif-page","7500":"https://wheels2wealth.com/w2w-diamond-mastermind-full-payment"};
 const PT_LABEL={full:'Paid in Full',multi:'PIF – Multiple Payments',installments:'Paid in Installments',claritypay:'ClarityPay',klarna:'Klarna',afterpay:'Afterpay',shoppay:'ShopPay',affirm:'Affirm',sezzle:'Sezzle',zip:'ZIP',splitit:'SplitIt',paypal:'PayPal Later',wire:'Wire',fanbasis:'Fanbasis',custom:'Custom Plan',two_pif:'2 People – PIF',two_multi:'2 People – Multi Pay',sub_467:'Subscription $467×3',sub_549:'Subscription $549×2'};
 
+// ── AIRTABLE CONFIG ───────────────────────────────────────────
+const AT_TOKEN='patqZ0XpoeSUQNbJT.faa92783151838fa19cf49c869c339ab7f067f90dec57ec9783cc0257a3e78c6';
+const AT_BASE='appm1BCBzZgCtkBdB';
+const AT_TABLE='Table%201';
+const AT_URL=`https://api.airtable.com/v0/${AT_BASE}/${AT_TABLE}`;
+const AT_HEADERS={'Authorization':`Bearer ${AT_TOKEN}`,'Content-Type':'application/json'};
+
+// In-memory cache of Airtable records
 let customDB={};
+let atRecordsLoaded=false;
+
+async function loadAirtableRecords(){
+  try{
+    const res=await fetch(`${AT_URL}?maxRecords=1000`,{headers:AT_HEADERS});
+    const data=await res.json();
+    if(data.records){
+      data.records.forEach(r=>{
+        const f=r.fields;
+        if(f['Payment URL']){
+          const key=makeDBKey(f['Program']||'',f['Payment Type']||'',f['Amount']||null);
+          customDB[key]={url:f['Payment URL'],agr:f['Agreement URL']||'',prog:f['Program']||'',ptype:f['Payment Type']||'',amount:f['Amount']||null,plat:f['Platform']||'',label:f['Platform']||'',airtableId:r.id};
+        }
+      });
+      atRecordsLoaded=true;
+    }
+  }catch(e){console.error('Airtable load error:',e);}
+}
+
+async function saveToAirtable(prog,ptype,amount,plat,url,agr){
+  try{
+    const res=await fetch(AT_URL,{method:'POST',headers:AT_HEADERS,body:JSON.stringify({fields:{'Amount':amount?String(amount):'','Program':prog,'Payment Type':ptype,'Platform':plat,'Payment URL':url,'Agreement URL':agr||''}})});
+    const data=await res.json();
+    return data.id||null;
+  }catch(e){console.error('Airtable save error:',e);return null;}
+}
+
 function makeDBKey(prog,ptype,amount){return`${prog}__${ptype}__${amount||'any'}`;}
 function lookupCustomDB(prog,ptype,amount){return customDB[makeDBKey(prog,ptype,amount)]||customDB[makeDBKey(prog,ptype,'any')]||null;}
+
+// Load records on startup
+loadAirtableRecords();
 
 function openModal(){document.getElementById('modal-overlay').classList.add('show');document.getElementById('m-url').focus();updatePlatformOptions();}
 function closeModal(){document.getElementById('modal-overlay').classList.remove('show');['m-url','m-amount'].forEach(id=>document.getElementById(id).value='');['m-prog','m-ptype','m-plat'].forEach(id=>document.getElementById(id).value='');document.getElementById('match-preview').classList.remove('show');document.getElementById('btn-save').disabled=true;updatePlatformOptions();}
@@ -451,7 +489,7 @@ function updatePreview(){
   btn.disabled=!url||!prog||!ptype||!plat;
 }
 
-function saveCustomLink(){
+async function saveCustomLink(){
   const url=document.getElementById('m-url').value.trim();
   const amount=parseInt(document.getElementById('m-amount').value)||null;
   const prog=document.getElementById('m-prog').value;
@@ -462,9 +500,18 @@ function saveCustomLink(){
   const cbaFull=amount&&amount<=597?597:797;
   const cbaIsDep=prog==='cba'&&amount&&![597,797].includes(amount);
   const agr=getAgr(prog,amount,effPtype,cbaIsDep,cbaFull);
+  // Save to local memory immediately
   customDB[makeDBKey(prog,effPtype,amount)]={url,agr,prog,ptype:effPtype,amount,plat,label:PLAT_LABELS[plat]||plat};
   closeModal();
-  showToast(`✓ Saved! $${amount||'any'} ${prog.toUpperCase()} ${PLAT_LABELS[plat]||plat}`);
+  showToast(`⏳ Saving to shared database...`);
+  // Save to Airtable
+  const id=await saveToAirtable(prog,effPtype,amount,PLAT_LABELS[plat]||plat,url,agr);
+  if(id){
+    customDB[makeDBKey(prog,effPtype,amount)].airtableId=id;
+    showToast(`✓ Saved & synced! ${amount||'any'} ${prog.toUpperCase()} — team can now search it`);
+  }else{
+    showToast(`⚠ Saved locally but sync failed — check connection`);
+  }
 }
 
 function showToast(msg){const t=document.getElementById('success-toast');document.getElementById('toast-msg').textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),3500);}
